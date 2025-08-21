@@ -1,83 +1,86 @@
 import express from "express";
 import bodyParser from "body-parser";
+import dotenv from "dotenv";
 import fetch from "node-fetch";
-import pkg from "@supabase/supabase-js";
 
-const { createClient } = pkg;
+dotenv.config();
 
 const app = express();
 app.use(bodyParser.json());
 
-// Supabase connect
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "my_verify_token";
+const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 
-// ✅ WhatsApp Verification (GET)
+// ✅ Step 1: Webhook Verification
 app.get("/webhook", (req, res) => {
-  const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
-
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode && token && mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("Webhook verified successfully!");
-    res.status(200).send(challenge);
-  } else {
-    console.error("Webhook verification failed");
-    res.sendStatus(403);
-  }
-});
-
-// ✅ WhatsApp Message Receiver (POST)
-app.post("/webhook", async (req, res) => {
-  try {
-    const body = req.body;
-
-    if (body.object) {
-      const entry = body.entry?.[0];
-      const changes = entry?.changes?.[0];
-      const message = changes?.value?.messages?.[0];
-
-      if (message) {
-        const from = message.from; // sender's phone number
-        const text = message.text?.body;
-
-        console.log("📩 Message received:", from, text);
-
-        // Store in Supabase orders table
-        const { error } = await supabase.from("orders").insert([
-          {
-            customer_number: from,
-            raw_message: text,
-            status: "pending",
-          },
-        ]);
-
-        if (error) {
-          console.error("❌ Supabase insert error:", error.message);
-        } else {
-          console.log("✅ Order inserted in Supabase");
-        }
-      }
+  if (mode && token) {
+    if (mode === "subscribe" && token === VERIFY_TOKEN) {
+      console.log("Webhook verified ✅");
+      res.status(200).send(challenge);
+    } else {
+      res.sendStatus(403);
     }
-
-    res.sendStatus(200);
-  } catch (err) {
-    console.error("❌ Error handling webhook:", err.message);
-    res.sendStatus(500);
   }
 });
 
-// Root check
-app.get("/", (req, res) => {
-  res.send("✅ WhatsApp Backend is running.");
+// ✅ Step 2: Webhook to receive messages
+app.post("/webhook", (req, res) => {
+  const body = req.body;
+
+  console.log("Incoming webhook:", JSON.stringify(body, null, 2));
+
+  if (body.object) {
+    if (
+      body.entry &&
+      body.entry[0].changes &&
+      body.entry[0].changes[0].value.messages &&
+      body.entry[0].changes[0].value.messages[0]
+    ) {
+      const message = body.entry[0].changes[0].value.messages[0];
+      const from = message.from; // Customer phone number
+      const text = message.text?.body || "";
+
+      console.log(`📩 Message from ${from}: ${text}`);
+
+      // reply back to user
+      sendMessage(from, "Hi 👋 thanks for your message!");
+    }
+    res.sendStatus(200);
+  } else {
+    res.sendStatus(404);
+  }
 });
 
-// Run server
-const PORT = process.env.PORT || 10000;
+// ✅ Step 3: Send Message function
+async function sendMessage(to, text) {
+  const url = "https://graph.facebook.com/v20.0/me/messages";
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to: to,
+        text: { body: text }
+      })
+    });
+
+    const data = await response.json();
+    console.log("Message sent ✅:", data);
+  } catch (error) {
+    console.error("Error sending message:", error);
+  }
+}
+
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🚀 WhatsApp Backend running on port ${PORT}`);
 });
