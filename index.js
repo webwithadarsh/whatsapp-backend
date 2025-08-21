@@ -1,18 +1,18 @@
 import express from "express";
-import bodyParser from "body-parser";
-import dotenv from "dotenv";
 import fetch from "node-fetch";
 
-dotenv.config();
-
 const app = express();
-app.use(bodyParser.json());
+app.use(express.json());
 
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "my_verify_token";
-const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
+// ✅ Root
+app.get("/", (req, res) => {
+  res.send("🚀 WhatsApp Backend is running!");
+});
 
-// ✅ Step 1: Webhook Verification
+// ✅ Webhook verification (Meta setup साठी)
 app.get("/webhook", (req, res) => {
+  const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
@@ -27,8 +27,8 @@ app.get("/webhook", (req, res) => {
   }
 });
 
-// ✅ Step 2: Webhook to receive messages
-app.post("/webhook", (req, res) => {
+// ✅ Incoming messages
+app.post("/webhook", async (req, res) => {
   const body = req.body;
 
   console.log("Incoming webhook:", JSON.stringify(body, null, 2));
@@ -40,14 +40,33 @@ app.post("/webhook", (req, res) => {
       body.entry[0].changes[0].value.messages &&
       body.entry[0].changes[0].value.messages[0]
     ) {
-      const message = body.entry[0].changes[0].value.messages[0];
-      const from = message.from; // Customer phone number
-      const text = message.text?.body || "";
+      const phone_number_id =
+        body.entry[0].changes[0].value.metadata.phone_number_id;
+      const from = body.entry[0].changes[0].value.messages[0].from; // sender wa_id
+      const msg_body =
+        body.entry[0].changes[0].value.messages[0].text.body;
 
-      console.log(`📩 Message from ${from}: ${text}`);
+      console.log(`📩 Message from ${from}: ${msg_body}`);
 
-      // reply back to user
-      sendMessage(from, "Hi 👋 thanks for your message!");
+      // ✅ Reply back using correct phone_number_id
+      try {
+        const url = `https://graph.facebook.com/v18.0/${phone_number_id}/messages?access_token=${process.env.WHATSAPP_TOKEN}`;
+
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messaging_product: "whatsapp",
+            to: from,
+            text: { body: `You said: ${msg_body}` },
+          }),
+        });
+
+        const data = await response.json();
+        console.log("Message sent ✅:", data);
+      } catch (err) {
+        console.error("Error sending message:", err);
+      }
     }
     res.sendStatus(200);
   } else {
@@ -55,32 +74,8 @@ app.post("/webhook", (req, res) => {
   }
 });
 
-// ✅ Step 3: Send Message function
-async function sendMessage(to, text) {
-  const url = "https://graph.facebook.com/v20.0/me/messages";
-
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        to: to,
-        text: { body: text }
-      })
-    });
-
-    const data = await response.json();
-    console.log("Message sent ✅:", data);
-  } catch (error) {
-    console.error("Error sending message:", error);
-  }
-}
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 WhatsApp Backend running on port ${PORT}`);
-});
+// ✅ Port binding for Render
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () =>
+  console.log(`🚀 WhatsApp Backend running on port ${PORT}`)
+);
