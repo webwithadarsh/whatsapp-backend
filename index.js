@@ -1,28 +1,35 @@
 import express from "express";
-import bodyParser from "body-parser";
 import { createClient } from "@supabase/supabase-js";
 
 const app = express();
-app.use(bodyParser.json());
+app.use(express.json());
 
-// 🔗 Supabase config (Railway वर आपण variables मध्ये ठेवू)
+// Supabase client (SERVER KEY वापरा)
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
 
-// ✅ WhatsApp Webhook route
-app.post("/webhook", async (req, res) => {
-  console.log("Incoming WhatsApp Message:", req.body);
+// WhatsApp webhook verification (GET)
+app.get("/webhook/whatsapp", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+  if (mode === "subscribe" && token === process.env.WHATSAPP_VERIFY_TOKEN) {
+    return res.status(200).send(challenge);
+  }
+  return res.sendStatus(403);
+});
 
-  // इथे पुढे Groq LLM आणि DB insert logic टाकू
+// WhatsApp messages (POST)
+app.post("/webhook/whatsapp", (req, res) => {
+  console.log("📩 WhatsApp payload:", JSON.stringify(req.body));
+  // पुढे इथे Groq parsing + order insert लावू
   res.sendStatus(200);
 });
 
-// ✅ Root check
-app.get("/", (req, res) => {
-  res.send("WhatsApp Backend is running 🚀");
-});
+// Health check
+app.get("/", (_req, res) => res.send("WhatsApp Backend is running ✅"));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Server running on ${PORT}`));
