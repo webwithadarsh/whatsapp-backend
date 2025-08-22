@@ -116,26 +116,42 @@ app.post("/webhook", async (req, res) => {
       // =====================
       // STATUS CHECK FLOW
       // =====================
-      else if (msg_body.toLowerCase().startsWith("status")) {
+else if (msg_body.toLowerCase().startsWith("status")) {
   const parts = msg_body.split(" ");
   if (parts.length < 2) {
     reply = "❌ Please provide order id. Example: status <order_id>";
   } else {
     const orderId = parts[1].trim();
-    const { data, error } = await supabase
+
+    // Order fetch
+    const { data: order, error: orderError } = await supabase
       .from("orders")
-      .select("id, status, total, items")
+      .select("id, status, total")
       .eq("id", orderId)
       .single();
 
-    if (error || !data) {
-      console.error("Order lookup error:", error);
+    if (orderError || !order) {
+      console.error("Order lookup error:", orderError);
       reply = `❌ Order not found with id: ${orderId}`;
     } else {
-      reply = `📦 Order Status\nID: ${data.id}\nStatus: ${data.status}\nTotal: ₹${data.total}\nItems: ${JSON.stringify(data.items)}`;
+      // Items fetch
+      const { data: items, error: itemsError } = await supabase
+        .from("order_items")
+        .select("product_name, quantity, price")
+        .eq("order_id", orderId);
+
+      let itemsList = "None";
+      if (items && items.length > 0) {
+        itemsList = items
+          .map(i => `${i.product_name} x ${i.quantity} = ₹${i.price}`)
+          .join("\n");
+      }
+
+      reply = `📦 Order Status\nID: ${order.id}\nStatus: ${order.status}\nTotal: ₹${order.total}\nItems:\n${itemsList}`;
     }
   }
 }
+
 
       // Send reply
       const url = `https://graph.facebook.com/v18.0/${phone_number_id}/messages?access_token=${process.env.WHATSAPP_TOKEN}`;
@@ -161,4 +177,5 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`🚀 WhatsApp Backend running on port ${PORT}`);
 });
+
 
