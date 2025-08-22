@@ -4,18 +4,18 @@ import pkg from "@supabase/supabase-js";
 
 const { createClient } = pkg;
 
-// Supabase client
+const app = express();
+app.use(express.json());
+
+// Supabase init
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const app = express();
-app.use(express.json());
-
 // Home route
 app.get("/", (req, res) => {
-  res.send("🚀 WhatsApp Backend is running!");
+  res.send("🚀 WhatsApp Backend is running with Supabase!");
 });
 
 // Webhook verification
@@ -44,80 +44,128 @@ app.post("/webhook", async (req, res) => {
     const entry = req.body.entry?.[0]?.changes?.[0]?.value;
     const phone_number_id = entry?.metadata?.phone_number_id;
     const from = entry?.messages?.[0]?.from; // User phone number
-    const msg_body = entry?.messages?.[0]?.text?.body?.toLowerCase();
+    const msg_body = entry?.messages?.[0]?.text?.body?.trim().toLowerCase();
 
     if (msg_body && from) {
       console.log(`📩 Message from ${from}: ${msg_body}`);
 
-      let replyMessage = "Sorry, I didn't understand. Try 'order rice 2' or 'status <order_id>'.";
+      let replyText = "🙏 Sorry, I didn’t understand that. Try 'list', 'order', or 'status'.";
 
-      // === ORDER FLOW ===
-      if (msg_body.startsWith("order")) {
-        const parts = msg_body.split(" ");
-        if (parts.length >= 3) {
-          const productName = parts[1];
-          const qty = parseInt(parts[2]);
+      // Flow 1: List Products
+      if (msg_body === "list") {
+        const { data: products, error } = await supabase
+          .from("products")
+          .select("name, price, stock");
 
-          // Find product in DB
-          const { data: product, error: productError } = await supabase
+        if (error) {
+          console.error("❌ Supabase error:", error);
+          replyText = "⚠️ Failed to fetch products.";
+        } else if (products.length === 0) {
+          replyText = "📦 No products available.";
+        } else {
+          replyText = "🛒 Available products:\n";
+          products.forEach((p, i) => {
+            replyText += `${i + 1}. ${p.name} – ₹${p.price} (${p.stock} left)\n`;
+          });
+        }
+      }
+
+      // Flow 2: Create Order + Reduce Stock
+      else if (msg_body.startsWith("order")) {
+        // Example: order rice 2,wheat 1
+        const items = msg_body.replace("order", "").trim();
+        if (!items) {
+          replyText = "⚠️ Usage: order rice 2,wheat 1";
+        } else {
+          const orderItems = items.split(",").map((item) => {
+            const [name, qty] = item.trim().split(" ");
+            return { name, qty: parseInt(qty) || 1 };
+          });
+
+          // Fetch product prices & stock
+          const { data: products } = await supabase
             .from("products")
-            .select("*")
-            .ilike("name", productName)
-            .single();
+            .select("id, name, price, stock");
 
-          if (productError || !product) {
-            replyMessage = `❌ Product "${productName}" not found.`;
+          let total = 0;
+          let orderDetails = [];
+          let stockUpdateErrors = [];
+
+          for (let oi of orderItems) {
+            const product = products.find(
+              (p) => p.name.toLowerCase() === oi.name.toLowerCase()
+            );
+            if (!product) {
+              stockUpdateErrors.push(`❌ ${oi.name} not found`);
+              continue;
+            }
+            if (product.stock < oi.qty) {
+              stockUpdateErrors.push(`⚠️ Not enough stock for ${product.name} (only ${product.stock} left)`);
+              continue;
+            }
+
+            total += product.price * oi.qty;
+            orderDetails.push({
+              product_id: product.id,
+              quantity: oi.qty,
+              price: product.price,
+            });
+          }
+
+          if (orderDetails.length === 0) {
+            replyText = "⚠️ Invalid order:\n" + stockUpdateErrors.join("\n");
           } else {
             // Insert order
-            const { data: order, error: orderError } = await supabase
+            const { data: newOrder, error } = await supabase
               .from("orders")
               .insert([
                 {
-                  shop_id: product.shop_id,
-                  channel: "whatsapp",
-                  customer_name: "WhatsApp User",
-                  customer_phone: from,
+                  customer_number: from,
                   status: "pending",
-                  payment: "cod",
+                  total,
+                  items: orderDetails,
                 },
               ])
               .select()
               .single();
 
-            if (orderError) {
-              console.error("Order insert error:", orderError);
-              replyMessage = "❌ Could not create order.";
+            if (error) {
+              console.error("❌ Supabase error:", error);
+              replyText = "⚠️ Failed to create order.";
             } else {
-              // Insert order item
-              const { error: itemError } = await supabase
-                .from("order_items")
-                .insert([
-                  {
-                    order_id: order.id,
-                    product_id: product.id,
-                    qty: qty,
-                    price: product.price,
-                  },
-                ]);
+              // Reduce stock for each product ordered
+              for (let oi of orderDetails) {
+                const { error: stockError } = await supabase
+                  .from("products")
+                  .update({ stock: supabase.rpc("greatest", { a: 0, b: oi.stock - oi.quantity }) }) // fallback safe
+                  .eq("id", oi.product_id);
 
-              if (itemError) {
-                console.error("Order item insert error:", itemError);
-                replyMessage = "❌ Could not add item to order.";
-              } else {
-                replyMessage = `✅ Order created!\nOrder ID: ${order.id}\nProduct: ${product.name}\nQty: ${qty}\nTotal: ₹${qty * product.price}`;
+                if (stockError) {
+                  console.error("❌ Stock update failed:", stockError);
+                } else {
+                  // simpler: direct reduce
+                  await supabase
+                    .from("products")
+                    .update({ stock: products.find(p => p.id === oi.product_id).stock - oi.quantity })
+                    .eq("id", oi.product_id);
+                }
+              }
+
+              replyText = `✅ Order created!\n🆔 ID: ${newOrder.id}\n💰 Total: ₹${total}`;
+              if (stockUpdateErrors.length > 0) {
+                replyText += "\n\n⚠️ Notes:\n" + stockUpdateErrors.join("\n");
               }
             }
           }
-        } else {
-          replyMessage = "❌ Usage: order <product_name> <qty>";
         }
       }
 
-      // === STATUS FLOW ===
+      // Flow 3: Check Status
       else if (msg_body.startsWith("status")) {
-        const parts = msg_body.split(" ");
-        if (parts.length >= 2) {
-          const orderId = parts[1];
+        const orderId = msg_body.replace("status", "").trim();
+        if (!orderId) {
+          replyText = "⚠️ Usage: status <order_id>";
+        } else {
           const { data: order, error } = await supabase
             .from("orders")
             .select("id, status, total")
@@ -125,26 +173,22 @@ app.post("/webhook", async (req, res) => {
             .single();
 
           if (error || !order) {
-            replyMessage = `❌ Order not found with ID: ${orderId}`;
+            replyText = "⚠️ Order not found.";
           } else {
-            replyMessage = `📦 Order Status:\nID: ${order.id}\nStatus: ${order.status}\nTotal: ₹${order.total}`;
+            replyText = `📦 Order ${order.id}\nStatus: ${order.status}\nTotal: ₹${order.total}`;
           }
-        } else {
-          replyMessage = "❌ Usage: status <order_id>";
         }
       }
 
-      // Send reply to WhatsApp
+      // Send reply back to WhatsApp
       const url = `https://graph.facebook.com/v18.0/${phone_number_id}/messages?access_token=${process.env.WHATSAPP_TOKEN}`;
-      console.log("➡️ Sending reply via:", url);
-
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messaging_product: "whatsapp",
           to: from,
-          text: { body: replyMessage },
+          text: { body: replyText },
         }),
       });
 
