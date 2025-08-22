@@ -1,15 +1,22 @@
 import express from "express";
 import fetch from "node-fetch";
+import { createClient } from "@supabase/supabase-js";
 
 const app = express();
 app.use(express.json());
+
+// 🔑 Supabase client init
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 // Home route
 app.get("/", (req, res) => {
   res.send("🚀 WhatsApp Backend is running!");
 });
 
-// Webhook verification
+// Webhook verification (Facebook callback)
 app.get("/webhook", (req, res) => {
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
@@ -40,9 +47,31 @@ app.post("/webhook", async (req, res) => {
     if (msg_body && from) {
       console.log(`📩 Message from ${from}: ${msg_body}`);
 
-      const url = `https://graph.facebook.com/v18.0/${phone_number_id}/messages?access_token=${process.env.WHATSAPP_TOKEN}`;
-      console.log("➡️ Sending reply via:", url);
+      // 1. Save message as order in Supabase
+      const { data, error } = await supabase
+        .from("orders")
+        .insert([
+          {
+            channel: "whatsapp",
+            status: "pending",
+            payment: "unknown",
+            customer_phone: from,
+            customer_name: null, // TODO: पुढे विचारायचं
+            delivery_address: null,
+            notes: msg_body, // WhatsApp text as notes
+            shop_id: null,   // TODO: nearest shop mapping
+          },
+        ])
+        .select();
 
+      if (error) {
+        console.error("❌ Error saving to Supabase:", error);
+      } else {
+        console.log("✅ Order saved in Supabase:", data);
+      }
+
+      // 2. Reply back to user
+      const url = `https://graph.facebook.com/v18.0/${phone_number_id}/messages?access_token=${process.env.WHATSAPP_TOKEN}`;
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -53,8 +82,8 @@ app.post("/webhook", async (req, res) => {
         }),
       });
 
-      const data = await response.json();
-      console.log("Message sent ✅:", data);
+      const respData = await response.json();
+      console.log("Message sent ✅:", respData);
     }
   } catch (err) {
     console.error("❌ Error handling webhook:", err);
